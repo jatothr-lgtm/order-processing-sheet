@@ -23,7 +23,12 @@
   function loadMaster() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
-      if (raw) return C.normaliseMaster(JSON.parse(raw));
+      if (raw) {
+        const m = JSON.parse(raw);
+        // Saved before normalisations existed: start from the default ones.
+        if (!Array.isArray(m.normalisations)) m.normalisations = clone(DEFAULT.normalisations);
+        return C.normaliseMaster(m);
+      }
     } catch (e) { /* storage blocked or corrupt: fall back to the default */ }
     return clone(DEFAULT);
   }
@@ -196,6 +201,7 @@
     fillDatalists(pvs, fr);
     state.result = pvs && fr ? C.compute(state.master, pvs, fr, prev) : null;
     renderOutput();
+    updateHits();
   }
 
   function renderOutput() {
@@ -394,7 +400,29 @@
     { f: "itemName", label: "Item Name contains", list: "", cls: "col-sm" },
   ];
 
+  // Suggestions for a normalisation's values come from the column it rewrites.
+  const NORM_LIST = {
+    "Fill Rate|Item Group": "dl-fr-itemGroup",
+    "Fill Rate|NEW MIS ITEM GROUP": "dl-fr-newMis",
+    "Fill Rate|Parent Item": "dl-fr-parentItem",
+    "Fill Rate|Item Name": "dl-fr-itemName",
+    "Proj vs SO|Item Group": "dl-pvs-itemGroup",
+    "Proj vs SO|item_parent": "dl-pvs-itemParent",
+  };
+  const normColumns = file => (C.NORM_COLUMNS[file] || C.NORM_COLUMNS[C.FR]).map(([label]) => label);
+
   function renderMaster() {
+    renderGroups();
+    renderMap();
+    renderNorm();
+    saveMaster();
+  }
+
+  function setCount(kind, n) {
+    $(`cnt-${kind}`).textContent = n ? `· ${n}` : "";
+  }
+
+  function renderGroups() {
     const g = state.master.groups;
     $("tblGroups").innerHTML = `<thead><tr><th></th><th class="col-group">Group</th><th class="col-src">Source</th>${FILTERS.map(x => `<th class="${x.cls}">${x.label}</th>`).join("")}<th></th></tr></thead>
       <tbody>${g.map((row, i) => {
@@ -411,8 +439,7 @@
           </td>
         </tr>`;
       }).join("")}</tbody>`;
-    renderMap();
-    saveMaster();
+    setCount("groups", g.length);
   }
 
   function renderMap() {
@@ -428,7 +455,42 @@
           <td class="ord"><button class="icon del" data-act="del" title="Remove" aria-label="Remove">✕</button></td>
         </tr>`;
       }).join("")}</tbody>`;
+    setCount("pvsMap", m.length);
     fillGroupList();
+  }
+
+  function renderNorm() {
+    const list = state.master.normalisations;
+    const opts = (values, current) => {
+      const all = values.includes(current) || !current ? values : [...values, current];
+      return all.map(v => `<option${v === current ? " selected" : ""}>${esc(v)}</option>`).join("");
+    };
+    $("tblNorm").innerHTML = `<thead><tr><th></th><th class="col-src">File</th><th class="col-src">Column</th><th class="col-wide">Raw value — as in the file</th><th class="col-wide">Normalised value — used by the rules</th><th class="n" title="Lines or rows this normalisation changed in the files loaded">Changed</th><th></th></tr></thead>
+      <tbody>${list.map((row, i) => {
+        const dl = NORM_LIST[`${row.file}|${row.column}`] || "";
+        return `<tr data-i="${i}">
+          <td class="idx">${i + 1}</td>
+          <td><select data-f="file">${opts([C.FR, C.PVS], row.file)}</select></td>
+          <td><select data-f="column">${opts(normColumns(row.file), row.column)}</select></td>
+          <td><input data-f="raw" value="${esc(row.raw)}" title="${esc(row.raw)}"${dl ? ` list="${dl}"` : ""} placeholder="value to replace"></td>
+          <td><input data-f="value" value="${esc(row.value)}" title="${esc(row.value)}"${dl ? ` list="${dl}"` : ""} placeholder="replace it with"></td>
+          <td class="n hits" data-hit="${i}"></td>
+          <td class="ord"><button class="icon del" data-act="del" title="Remove" aria-label="Remove">✕</button></td>
+        </tr>`;
+      }).join("")}</tbody>`;
+    setCount("normalisations", list.length);
+    updateHits();
+  }
+
+  // How many lines each normalisation changed, from the latest calculation.
+  function updateHits() {
+    const hits = state.result ? state.result.normHits : null;
+    document.querySelectorAll("#tblNorm td.hits").forEach(td => {
+      const v = hits ? hits[+td.dataset.hit] : null;
+      td.textContent = v == null ? "—" : v.toLocaleString("en-IN");
+      td.classList.toggle("zero", v === 0);
+      td.title = v == null ? "Shows once both files are loaded" : v === 0 ? "Matches nothing in the files loaded" : `${v} lines or rows changed`;
+    });
   }
 
   function masterChanged() {
@@ -501,46 +563,197 @@
     masterChanged();
   });
 
-  $("btnAddGroup").addEventListener("click", () => {
-    state.master.groups.push({ group: "", source: C.FR, itemGroup: "", newMis: "", parentItem: "", itemName: "" });
+  $("tblNorm").addEventListener("input", e => {
+    const tr = e.target.closest("tr[data-i]"), f = e.target.dataset.f;
+    if (!tr || (f !== "raw" && f !== "value")) return;
+    state.master.normalisations[+tr.dataset.i][f] = e.target.value;
+    e.target.title = e.target.value;
+    masterChanged();
+  });
+  $("tblNorm").addEventListener("change", e => {
+    const tr = e.target.closest("tr[data-i]"), f = e.target.dataset.f;
+    if (!tr || (f !== "file" && f !== "column")) return;
+    const row = state.master.normalisations[+tr.dataset.i];
+    row[f] = e.target.value;
+    // Another file has other columns: keep the column if it exists there.
+    if (f === "file" && !normColumns(row.file).includes(row.column)) row.column = normColumns(row.file)[0];
+    renderNorm();
+    fillDatalistsNow();
+    masterChanged();
+  });
+  $("tblNorm").addEventListener("click", e => {
+    const b = e.target.closest("button[data-act=del]"), tr = e.target.closest("tr[data-i]");
+    if (!b || !tr) return;
+    state.master.normalisations.splice(+tr.dataset.i, 1);
+    renderNorm();
+    masterChanged();
+  });
+
+  /* ── per-table add, export, import, paste ───────────────────────── */
+
+  const FILE_SLUG = { groups: "groups", pvsMap: "proj-vs-so-mapping", normalisations: "normalisations" };
+  const TABLE_ID = { groups: "tblGroups", pvsMap: "tblMap", normalisations: "tblNorm" };
+  const FIRST_INPUT = { groups: "group", pvsMap: "value", normalisations: "raw" };
+
+  function addRow(kind) {
+    if (kind === "groups") state.master.groups.push({ group: "", source: C.FR, itemGroup: "", newMis: "", parentItem: "", itemName: "" });
+    else if (kind === "pvsMap") state.master.pvsMap.push({ column: "Item Group", value: "", group: "" });
+    else state.master.normalisations.push({ file: C.FR, column: "Parent Item", raw: "", value: "" });
     renderMaster();
-    const inputs = $("tblGroups").querySelectorAll('input[data-f="group"]');
+    const inputs = $(TABLE_ID[kind]).querySelectorAll(`input[data-f="${FIRST_INPUT[kind]}"]`);
     inputs[inputs.length - 1].focus();
+  }
+
+  function writeSheets(sheets, fileName) {
+    const wb = XLSX.utils.book_new();
+    for (const s of sheets) {
+      const ws = XLSX.utils.aoa_to_sheet(s.rows);
+      ws["!cols"] = s.rows[0].map((_, i) => ({ wch: i === 0 ? 26 : 40 }));
+      XLSX.utils.book_append_sheet(wb, ws, s.name);
+    }
+    XLSX.writeFile(wb, fileName);
+  }
+
+  function exportTable(kind) {
+    writeSheets([C.tableToSheet(kind, state.master[kind])], `Orders-Placed_${FILE_SLUG[kind]}.xlsx`);
+  }
+
+  async function sheetsFromFile(file) {
+    const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: "array", dense: true, raw: true, cellDates: false });
+    return wb.SheetNames.map(name => ({ name, rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true }) }));
+  }
+
+  // Rows copied from Excel arrive tab-separated; anything else is read as CSV.
+  function parsePaste(kind, text) {
+    if (!text.trim()) return null;
+    let rows;
+    if (text.includes("\t")) {
+      rows = text.replace(/\r/g, "").split("\n").map(line => line.split("\t"));
+    } else {
+      const wb = XLSX.read(text, { type: "string", raw: true });
+      rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+    }
+    return C.readTable(kind, [{ name: "pasted", rows }], { positional: true });
+  }
+
+  async function importFile(kind, file) {
+    try {
+      const sheets = await sheetsFromFile(file);
+      // A file without the header row is read in column order, like a paste.
+      const parsed = C.readTable(kind, sheets) || (sheets.length === 1 ? C.readTable(kind, sheets, { positional: true }) : null);
+      if (!parsed) { toast(`No sheet in ${file.name} has the headers ${C.TABLES[kind].headers.join(", ")}.`); return; }
+      openImport(kind, parsed, file.name);
+    } catch (err) {
+      toast(`Could not read ${file.name}: ${err.message}`);
+    }
+  }
+
+  let imp = null;   // the import being reviewed: { kind, parsed, from, paste }
+
+  function openImport(kind, parsed, from) {
+    imp = { kind, parsed, from, paste: !parsed };
+    const t = C.TABLES[kind];
+    $("impTitle").textContent = `${imp.paste ? "Paste" : "Import"} — ${t.title}`;
+    $("impPasteBox").hidden = !imp.paste;
+    if (imp.paste) {
+      $("impPasteHint").innerHTML = `Copy the rows in Excel and paste them here, with or without the header row. Columns, in this order: <b>${t.headers.map(esc).join(" · ")}</b>.`;
+      $("impText").value = "";
+    }
+    renderImportSummary();
+    // showModal keeps the last returnValue: clear it, or Escape after an
+    // earlier "Add & update" would apply this import too.
+    $("importDlg").returnValue = "";
+    $("importDlg").showModal();
+    if (imp.paste) $("impText").focus();
+  }
+
+  function renderImportSummary() {
+    const box = $("impSummary"), add = $("impAdd"), rep = $("impReplace");
+    const p = imp && imp.parsed;
+    const current = imp ? state.master[imp.kind] : [];
+    const skippedHtml = p && p.skipped.length
+      ? `<p class="warn">${p.skipped.length} row${p.skipped.length === 1 ? "" : "s"} skipped:</p><ul>${p.skipped.slice(0, 8).map(s => `<li>Line ${s.line}: ${esc(s.reason)}</li>`).join("")}${p.skipped.length > 8 ? `<li>… and ${p.skipped.length - 8} more</li>` : ""}</ul>`
+      : "";
+    if (!p || !p.rows.length) {
+      box.innerHTML = (imp && imp.paste && !p ? "<p>Nothing pasted yet.</p>" : "<p>No usable rows.</p>") + skippedHtml;
+      add.disabled = rep.disabled = true;
+      return;
+    }
+    const a = C.mergeTable(imp.kind, current, p.rows, "add");
+    const r = C.mergeTable(imp.kind, current, p.rows, "replace");
+    box.innerHTML = `<p><b>${p.rows.length} row${p.rows.length === 1 ? "" : "s"} read</b>${imp.from ? ` from ${esc(imp.from)}` : ""}.</p>${skippedHtml}
+      <p><b>Add &amp; update</b> — ${a.added} new, ${a.updated} changed, ${a.unchanged} already the same; ${a.rows.length} rows after.</p>
+      <p><b>Replace all</b> — the ${current.length} current rows are replaced by these ${r.rows.length}.</p>`;
+    add.disabled = rep.disabled = false;
+  }
+
+  let pasteTimer = null;
+  $("impText").addEventListener("input", () => {
+    clearTimeout(pasteTimer);
+    pasteTimer = setTimeout(() => { imp.parsed = parsePaste(imp.kind, $("impText").value); renderImportSummary(); }, 150);
   });
-  $("btnAddMap").addEventListener("click", () => {
-    state.master.pvsMap.push({ column: "Item Group", value: "", group: "" });
-    renderMap();
-    saveMaster();
-    const inputs = $("tblMap").querySelectorAll('input[data-f="value"]');
-    inputs[inputs.length - 1].focus();
+
+  $("importDlg").addEventListener("close", () => {
+    const mode = $("importDlg").returnValue;
+    if (!imp || (mode !== "add" && mode !== "replace")) { imp = null; return; }
+    if (imp.paste) imp.parsed = parsePaste(imp.kind, $("impText").value);
+    if (!imp.parsed || !imp.parsed.rows.length) { imp = null; return; }
+    const res = C.mergeTable(imp.kind, state.master[imp.kind], imp.parsed.rows, mode);
+    state.master[imp.kind] = res.rows;
+    const title = C.TABLES[imp.kind].title;
+    imp = null;
+    renderMaster();
+    fillDatalistsNow();
+    masterChanged();
+    toast(mode === "replace" ? `${title}: replaced with ${res.rows.length} rows` : `${title}: ${res.added} added, ${res.updated} updated`);
   });
+
+  document.querySelectorAll(".card[data-table]").forEach(card => {
+    const kind = card.dataset.table;
+    card.querySelector(".card-head").addEventListener("click", e => {
+      const b = e.target.closest("button[data-act]");
+      if (!b) return;
+      if (b.dataset.act === "add") addRow(kind);
+      else if (b.dataset.act === "export") exportTable(kind);
+      else if (b.dataset.act === "paste") openImport(kind, null, null);
+    });
+    const input = card.querySelector('input[data-act="import"]');
+    input.addEventListener("change", () => {
+      const f = input.files[0];
+      input.value = "";
+      if (f) importFile(kind, f);
+    });
+  });
+
+  /* ── the whole master ───────────────────────────────────────────── */
+
   $("btnMasterReset").addEventListener("click", () => {
-    if (!confirm("Discard every edit and go back to the default master?")) return;
+    if (!confirm("Discard every edit to all three tables and go back to the default master?")) return;
     state.master = clone(DEFAULT);
     renderMaster();
+    fillDatalistsNow();
     masterChanged();
     toast("Master reset to the default");
   });
   $("btnMasterDownload").addEventListener("click", () => {
-    const wb = XLSX.utils.book_new();
-    for (const s of C.masterToSheets(state.master)) {
-      const ws = XLSX.utils.aoa_to_sheet(s.rows);
-      ws["!cols"] = s.rows[0].map((_, i) => ({ wch: i === 0 ? 30 : 34 }));
-      XLSX.utils.book_append_sheet(wb, ws, s.name);
-    }
-    XLSX.writeFile(wb, "Orders-Placed_master.xlsx");
+    writeSheets(C.masterToSheets(state.master), "Orders-Placed_master.xlsx");
   });
   $("masterFile").addEventListener("change", async e => {
     const f = e.target.files[0];
     e.target.value = "";
     if (!f) return;
     try {
-      const wb = C.readWorkbook(window.XLSX, await f.arrayBuffer());
-      if (!wb.master) throw new Error("no Master - Groups and Master - Proj vs SO sheets found. Use a downloaded master or an output file.");
-      state.master = C.normaliseMaster(wb.master);
+      const m = C.readMaster(await sheetsFromFile(f));
+      // A master saved before normalisations existed has none: keep ours.
+      const keepNorm = m.normalisations === null;
+      state.master = C.normaliseMaster({ ...m, normalisations: keepNorm ? state.master.normalisations : m.normalisations });
       renderMaster();
+      fillDatalistsNow();
       masterChanged();
-      toast(`Master loaded: ${state.master.groups.length} groups, ${state.master.pvsMap.length} mappings`);
+      const g = state.master;
+      toast(`Master loaded: ${g.groups.length} groups, ${g.pvsMap.length} mappings, ${g.normalisations.length} normalisations` +
+        (keepNorm ? " (the file has none, so the current ones were kept)" : "") +
+        (m.skipped.length ? ` · ${m.skipped.length} rows skipped` : ""));
     } catch (err) {
       toast(`Could not load the master: ${err.message}`);
     }
@@ -551,13 +764,21 @@
   function setList(id, values) {
     $(id).innerHTML = [...values].sort((a, b) => a.localeCompare(b)).map(v => `<option value="${esc(v)}">`).join("");
   }
+  // Values as they appear in the files, plus the normalised values the
+  // master introduces, so either can be picked in a rule.
   function fillDatalists(pvs, fr) {
-    setList("dl-fr-itemGroup", fr ? fr.labels["Item Group"].values() : []);
-    setList("dl-fr-newMis", fr ? fr.labels["NEW MIS ITEM GROUP"].values() : []);
-    setList("dl-fr-parentItem", fr ? fr.labels["Parent Item"].values() : []);
-    setList("dl-pvs-itemGroup", pvs ? pvs.labels["Item Group"].values() : []);
-    setList("dl-pvs-itemParent", pvs ? pvs.labels.item_parent.values() : []);
+    const targets = id => state.master.normalisations
+      .filter(n => NORM_LIST[`${n.file}|${n.column}`] === id && n.value.trim())
+      .map(n => n.value.trim());
+    const fill = (id, labels) => setList(id, new Set([...(labels ? labels.values() : []), ...targets(id)]));
+    fill("dl-fr-itemGroup", fr && fr.labels["Item Group"]);
+    fill("dl-fr-newMis", fr && fr.labels["NEW MIS ITEM GROUP"]);
+    fill("dl-fr-parentItem", fr && fr.labels["Parent Item"]);
+    fill("dl-fr-itemName", fr && fr.labels["Item Name"]);
+    fill("dl-pvs-itemGroup", pvs && pvs.labels["Item Group"]);
+    fill("dl-pvs-itemParent", pvs && pvs.labels.item_parent);
   }
+  const fillDatalistsNow = () => fillDatalists(current("pvs"), current("fr"));
   function fillGroupList() {
     setList("dl-groups-pvs", state.master.groups.filter(g => g.source === C.PVS && g.group.trim()).map(g => g.group));
   }
@@ -579,5 +800,6 @@
   }
 
   renderMaster();
+  fillDatalistsNow();
   renderOutput();
 })();

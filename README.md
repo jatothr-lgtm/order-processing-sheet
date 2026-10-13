@@ -33,6 +33,9 @@ a month; those are left out and reported with their kg.
 
 The month is the fill rate's month. Proj vs SO is read for that same month.
 
+First, the master's [normalisations](#normalisations) rewrite any values they
+list in either file; everything below works on the result.
+
 **Proj vs SO Groups** sum `SO Qty` over the Proj vs SO rows for that month whose
 `Item Group` or `item_parent` matches the Group's mapping rows. A row that
 matches more than one mapping row of the same Group counts once.
@@ -96,19 +99,84 @@ Snack Mix and Seed Mix in `ops` is ignored: those Groups come from Proj vs SO.
 
 ## The master is editable
 
-The **Master** tab has two tables: *Groups* (output rows, their order, source
-and fill-rate filters) and *Proj vs SO mapping*. Edits apply at once and are
-kept in that browser. **Download master** saves them as an `.xlsx` and **Upload
-master** loads one back. Every output file also carries the master it was built
-with, so an output can be uploaded as a master too. **Reset to default** returns
-to [`master.js`](master.js); change that file to change the default for everyone.
+The **Master** tab holds three tables:
+
+| Table | What it decides | Import matches rows by |
+|---|---|---|
+| **Normalisations** | Values in the files rewritten before any rule runs | File + Column + Raw value |
+| **Groups** | The output rows, their order and source, and the fill-rate filters | Group name |
+| **Proj vs SO mapping** | Which Proj vs SO rows count towards each Proj vs SO Group | Match column + Value + Group |
+
+Edits apply at once and are kept in that browser. **Reset to default**
+returns to [`master.js`](master.js); change that file to change the default
+for everyone.
+
+### Normalisations
+
+Case and extra spaces are always ignored, so `Trail mix`, `Trail Mix` and
+`Trail Mix ` are the same value and need no row. A normalisation handles
+everything else: a spelling variant, a renamed item or an old name. Each row
+names a file (Fill Rate or Proj vs SO), one of its columns, the raw value as it
+appears in that column, and the value to use instead:
+
+| File | Columns it can rewrite |
+|---|---|
+| Fill Rate | Item Group, NEW MIS ITEM GROUP, Parent Item, Item Name |
+| Proj vs SO | Item Group, item_parent |
+
+The raw value must match the whole cell. Each value is replaced at most once,
+so normalisations do not chain: with A → B and B → C, an A becomes B. Every
+Group rule, mapping and "value not found" check then works on the normalised
+values.
+
+The **Changed** column shows how many lines each normalisation rewrote in the
+files loaded. **0** means it matches nothing there: usually a different
+spelling, or an item that has gone. The Report tab says the same, and also
+flags a raw value listed twice with different targets, an unknown file and a
+column the file does not have.
+
+The default master fixes the "Flavored" / "Flavoured" spellings found in both
+files (Roasted & Flavoured Makhana - Cream N Onion and - Black Pepper). They
+change none of the current figures, because no Group rule uses those names.
+
+### Bulk import and export
+
+Every table has the same four buttons:
+
+- **Export** downloads the table as `.xlsx`, ready to edit in Excel.
+- **Import file** loads an `.xlsx`, `.xls` or `.csv`. The header row is found
+  on any sheet, below a title if need be. A one-sheet file without headers is
+  read in the export's column order.
+- **Paste rows** takes rows copied straight from Excel, with or without the
+  header row.
+- **+ Add row** adds a blank row.
+
+Before anything changes, an import shows:
+
+- how many rows it read
+- which rows it skipped and why, with their line numbers
+- what each choice would do
+
+The choices are:
+
+- **Add & update:** new rows are appended, and rows already in the table are
+  updated in place, keeping their order.
+- **Replace all:** the table becomes exactly the imported rows.
+
+**Download whole master** saves all three tables in one workbook, and
+**Upload whole master** loads them back. Every output file carries the master
+it was built with, so an output can be uploaded as a master too. A master saved
+before normalisations existed has only two tables. Uploading one keeps the
+normalisations already on the page.
 
 Mistakes are flagged rather than turned into a silent 0:
 
-- a filter value that appears nowhere in the uploaded file
+- a filter value that appears nowhere in the uploaded file, after normalisation
 - a Proj vs SO Group with no mapping
 - a mapping that points at a missing Group
 - a Group listed twice
+- a normalisation that matches nothing, conflicts with another, or names a
+  column its file does not have
 
 ## The output workbook
 
@@ -117,7 +185,7 @@ Mistakes are flagged rather than turned into a silent 0:
 | **Orders Placed** | The Sheet1 layout: title, year labels, `Group` with `mmm-yy` months, one row per Group, Grand Total Kgs (`SUM`) and Tons (`ROUND`) |
 | **Workings** | Each Group's rule, the number of source rows it matched and the unrounded kg |
 | **Notes** | The files and sheets used, and every check raised on screen |
-| **Master - Groups**, **Master - Proj vs SO** | The master used for this output |
+| **Master - Groups**, **Master - Proj vs SO**, **Master - Normalisations** | The master used for this output |
 
 ## Files
 

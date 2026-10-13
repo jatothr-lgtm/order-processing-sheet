@@ -18,6 +18,10 @@
  *  - "Roasted & Flavoured Cashew" is a NEW MIS ITEM GROUP value, so the 50 g
  *    row filters on that column rather than Parent Item.
  *  - Groups with no rule output 0, as the history does.
+ *  - Normalisations rewrite raw values in the files before any rule runs.
+ *    Case and extra spaces are always ignored, so these are only for real
+ *    differences. The defaults fix the "Flavored" / "Flavoured" spellings
+ *    found in both files; they change none of the current figures.
  *
  * Edits made on the page are kept in that browser and can be exported as an
  * .xlsx. Change this file to change the default for everyone.
@@ -97,7 +101,16 @@
     m("item_parent", "Seed Mix"),
   ];
 
-  const DEFAULT_MASTER = { groups, pvsMap };
+  const n = (file, column, raw, value) => ({ file, column, raw, value });
+  const CNO = "Roasted & Flavoured Makhana - Cream N Onion";
+
+  const normalisations = [
+    n(FR, "Parent Item", "Roasted & Flavored Makhana - Cream N Onion", CNO),
+    n(PVS, "item_parent", "Roasted & Flavored Makhana - Cream N Onion", CNO),
+    n(PVS, "item_parent", "Roasted & Flavored Makhana - Black Pepper", "Roasted & Flavoured Makhana - Black Pepper"),
+  ];
+
+  const DEFAULT_MASTER = { groups, pvsMap, normalisations };
 
   if (typeof module === "object" && module.exports) module.exports = DEFAULT_MASTER;
   else root.ORDERS_DEFAULT_MASTER = DEFAULT_MASTER;

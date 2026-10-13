@@ -12,7 +12,7 @@
   // At the site root this is a no-op.
   if (!/(\/|\.html?)$/.test(location.pathname)) location.replace(location.pathname + "/" + location.search + location.hash);
 </script>
-<link rel="stylesheet" href="styles.css?v=1">
+<link rel="stylesheet" href="styles.css?v=2">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 </head>
@@ -77,29 +77,62 @@
 
   <!-- ── Master ─────────────────────────────────────────────── -->
   <section class="view" id="view-master">
-    <div class="card">
+    <div class="card master-bar">
       <div class="card-head">
-        <h2>Groups</h2>
+        <div>
+          <h2>Master</h2>
+          <p class="hint">Three tables decide the output. <b>Normalisations</b> clean the values in the files first; <b>Groups</b> and the <b>Proj vs SO mapping</b> then decide what each output row sums. Edits apply at once and are kept in this browser.</p>
+        </div>
         <div class="btns">
-          <button class="btn" id="btnAddGroup">+ Add group</button>
-          <button class="btn" id="btnMasterDownload">Download master</button>
-          <label class="btn">Upload master<input type="file" id="masterFile" accept=".xlsx,.xlsm,.xls" hidden></label>
+          <button class="btn" id="btnMasterDownload" title="All three tables in one Excel file">Download whole master</button>
+          <label class="btn" title="Load all three tables from a master or an output file">Upload whole master<input type="file" id="masterFile" accept=".xlsx,.xlsm,.xls" hidden></label>
           <button class="btn danger" id="btnMasterReset">Reset to default</button>
         </div>
       </div>
-      <p class="hint">One row per output row, in this order. <b>Proj vs SO</b> Groups take SO Qty through the mapping below. <b>Fill Rate</b> Groups sum Stock Qty in KGS over the rows that match <b>every</b> filled column; a cell with several values separated by commas matches <b>any</b> of them. In <i>Item Name contains</i>, a number such as <code>16</code> or <code>16 g</code> is a pack size, so 160 g does not count as 16 g; other text is a plain “contains”. A Fill Rate Group with no filters is 0.</p>
-      <div class="tablewrap"><table class="grid master" id="tblGroups"></table></div>
+      <p class="small flush">Each table also has its own <b>Export</b>, <b>Import file</b> and <b>Paste rows</b>. An import shows what will change and lets you <b>Add &amp; update</b> (new rows are added, rows already there are updated) or <b>Replace all</b>. Every output file carries the master it was built with and can be uploaded here.</p>
     </div>
 
-    <div class="card">
+    <section class="card" data-table="normalisations">
       <div class="card-head">
-        <h2>Proj vs SO mapping</h2>
-        <div class="btns"><button class="btn" id="btnAddMap">+ Add mapping</button></div>
+        <h2>Normalisations <span class="count" id="cnt-normalisations"></span></h2>
+        <div class="btns">
+          <button class="btn" data-act="add">+ Add row</button>
+          <button class="btn" data-act="export" title="Download this table as Excel">Export</button>
+          <label class="btn" title="Load rows from an Excel or CSV file">Import file<input type="file" data-act="import" accept=".xlsx,.xlsm,.xls,.csv" hidden></label>
+          <button class="btn" data-act="paste" title="Paste rows copied from Excel">Paste rows</button>
+        </div>
+      </div>
+      <p class="hint">Replaces a value in one column of one file before any rule sees it: a spelling variant, a renamed item, an old name. Case and extra spaces are always ignored, so “Trail mix” and “Trail Mix ” need no row. The raw value must match the whole cell. Each value is replaced once; normalisations do not chain. <i>Changed</i> counts the lines each row rewrote in the files loaded; 0 means it matches nothing there.</p>
+      <div class="tablewrap"><table class="grid master" id="tblNorm"></table></div>
+    </section>
+
+    <section class="card" data-table="groups">
+      <div class="card-head">
+        <h2>Groups <span class="count" id="cnt-groups"></span></h2>
+        <div class="btns">
+          <button class="btn" data-act="add">+ Add row</button>
+          <button class="btn" data-act="export" title="Download this table as Excel">Export</button>
+          <label class="btn" title="Load rows from an Excel or CSV file">Import file<input type="file" data-act="import" accept=".xlsx,.xlsm,.xls,.csv" hidden></label>
+          <button class="btn" data-act="paste" title="Paste rows copied from Excel">Paste rows</button>
+        </div>
+      </div>
+      <p class="hint">One row per output row, in this order. <b>Proj vs SO</b> Groups take SO Qty through the mapping below. <b>Fill Rate</b> Groups sum Stock Qty in KGS over the rows that match <b>every</b> filled column; a cell with several values separated by commas matches <b>any</b> of them. In <i>Item Name contains</i>, a number such as <code>16</code> or <code>16 g</code> is a pack size, so 160 g does not count as 16 g; other text is a plain “contains”. A Fill Rate Group with no filters is 0. Import matches Groups by name.</p>
+      <div class="tablewrap"><table class="grid master" id="tblGroups"></table></div>
+    </section>
+
+    <section class="card" data-table="pvsMap">
+      <div class="card-head">
+        <h2>Proj vs SO mapping <span class="count" id="cnt-pvsMap"></span></h2>
+        <div class="btns">
+          <button class="btn" data-act="add">+ Add row</button>
+          <button class="btn" data-act="export" title="Download this table as Excel">Export</button>
+          <label class="btn" title="Load rows from an Excel or CSV file">Import file<input type="file" data-act="import" accept=".xlsx,.xlsm,.xls,.csv" hidden></label>
+          <button class="btn" data-act="paste" title="Paste rows copied from Excel">Paste rows</button>
+        </div>
       </div>
       <p class="hint">A Proj vs SO row counts towards the Group when its Item Group or item_parent equals the Value. A Group with several mapping rows counts each Proj vs SO row once, even if it matches more than one.</p>
       <div class="tablewrap"><table class="grid master" id="tblMap"></table></div>
-    </div>
-    <p class="small">Edits are kept in this browser only. Use Download master to share them or keep a copy; every output file also carries the master it was built with, and can be uploaded here as a master.</p>
+    </section>
   </section>
 
 </main>
@@ -108,13 +141,30 @@
 <datalist id="dl-fr-itemGroup"></datalist>
 <datalist id="dl-fr-newMis"></datalist>
 <datalist id="dl-fr-parentItem"></datalist>
+<datalist id="dl-fr-itemName"></datalist>
 <datalist id="dl-pvs-itemGroup"></datalist>
 <datalist id="dl-pvs-itemParent"></datalist>
 
+<dialog id="importDlg" class="dlg" aria-labelledby="impTitle">
+  <form method="dialog">
+    <h2 id="impTitle">Import</h2>
+    <div id="impPasteBox">
+      <p class="hint" id="impPasteHint"></p>
+      <textarea id="impText" rows="9" spellcheck="false" placeholder="Paste rows here"></textarea>
+    </div>
+    <div id="impSummary" class="imp-summary"></div>
+    <div class="dlg-btns">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn danger" value="replace" id="impReplace">Replace all</button>
+      <button class="btn primary" value="add" id="impAdd">Add &amp; update</button>
+    </div>
+  </form>
+</dialog>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="master.js?v=1"></script>
-<script src="calc.js?v=1"></script>
-<script src="app.js?v=1"></script>
+<script src="master.js?v=2"></script>
+<script src="calc.js?v=2"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>

@@ -30,6 +30,13 @@
 
   const GROUP_HEADERS = ["Group", "Source", "Item Group", "NEW MIS ITEM GROUP", "Parent Item", "Item Name contains"];
   const MAP_HEADERS = ["Match column", "Value", "Group"];
+  const NORM_HEADERS = ["File", "Column", "Raw value", "Normalised value"];
+
+  // Columns a normalisation can rewrite, per file: header → row field.
+  const NORM_COLUMNS = {
+    [FR]: [["Item Group", "itemGroup"], ["NEW MIS ITEM GROUP", "newMis"], ["Parent Item", "parentItem"], ["Item Name", "itemName"]],
+    [PVS]: [["Item Group", "itemGroup"], ["item_parent", "itemParent"]],
+  };
 
   /* ── text and numbers ───────────────────────────────────────────── */
 
@@ -169,7 +176,7 @@
     const h = findHeader(sheet.rows, FR_COLS);
     if (!h) return null;
     const c = h.col;
-    const labels = labelCollector(["Item Group", "NEW MIS ITEM GROUP", "Parent Item"]);
+    const labels = labelCollector(["Item Group", "NEW MIS ITEM GROUP", "Parent Item", "Item Name"]);
     const rows = [];
     const months = new Map();
     let undated = 0, undatedQty = 0;
@@ -188,6 +195,7 @@
       labels.add("Item Group", row[c["Item Group"]]);
       labels.add("NEW MIS ITEM GROUP", row[c["NEW MIS ITEM GROUP"]]);
       labels.add("Parent Item", row[c["Parent Item"]]);
+      labels.add("Item Name", row[c["Item Name"]]);
       rows.push({
         month,
         itemGroup: norm(row[c["Item Group"]]),
@@ -307,7 +315,7 @@
       const set = new Set(list);
       tests.push(row => set.has(row[field]));
       parts.push(`${label} ${list.length > 1 ? "in" : "="} ${showList(g[field])}`);
-      lists.push({ label, list, shown: showList(g[field]).split(", ") });
+      lists.push({ field, label, list, shown: showList(g[field]).split(", ") });
     }
     const names = splitList(g.itemName);
     if (names.length) {
@@ -318,6 +326,66 @@
     return { tests, lists, text: parts.length ? parts.join(" AND ") : "no rule — 0" };
   }
 
+  /* ── normalisations ─────────────────────────────────────────────── */
+
+  // Case and extra spaces are always ignored. A normalisation handles the
+  // rest: a spelling variant, a renamed item, an old code. It replaces the
+  // whole value in one column of one file before any Group rule looks at it.
+  function normColumn(file, v) {
+    const h = normHeader(v);
+    const hit = (NORM_COLUMNS[file] || []).find(([label]) => normHeader(label) === h);
+    return hit ? { label: hit[0], field: hit[1] } : null;
+  }
+
+  function compileNormalisations(list, warn) {
+    const byFile = { [FR]: {}, [PVS]: {} };   // field → Map(raw → rule)
+    const rules = [];
+    list.forEach((r, index) => {
+      const raw = norm(r.raw), value = norm(r.value);
+      if (!raw && !value) return;
+      const where = `Normalisation "${clean(r.raw)}"`;
+      const file = normSource(r.file);
+      if (!file) { warn(`${where} has File "${clean(r.file)}"; use Fill Rate or Proj vs SO.`); return; }
+      const col = normColumn(file, r.column);
+      if (!col) { warn(`${where} has Column "${clean(r.column)}", which the ${file} file does not have.`); return; }
+      if (!raw || !value) { warn(`${where} (${file} · ${col.label}) needs both a raw and a normalised value.`); return; }
+      const map = byFile[file][col.field] || (byFile[file][col.field] = new Map());
+      if (map.has(raw)) {
+        if (map.get(raw).value !== value) warn(`${where} (${file} · ${col.label}) is listed twice with different normalised values; the first is used.`);
+        return;
+      }
+      const rule = { index, file, column: col.label, field: col.field, raw: clean(r.raw), value, hits: 0 };
+      map.set(raw, rule);
+      rules.push(rule);
+    });
+    return { byFile, rules };
+  }
+
+  // Each value is replaced at most once: normalisations do not chain, so
+  // A → B and B → C leave an A as B.
+  function applyNormalisations(rows, fieldMaps) {
+    const fields = Object.keys(fieldMaps);
+    if (!fields.length) return { rows, changed: 0 };
+    let changed = 0;
+    const out = rows.map(row => {
+      let copy = null;
+      for (const f of fields) {
+        const rule = fieldMaps[f].get(row[f]);
+        if (rule) { if (!copy) copy = { ...row }; copy[f] = rule.value; rule.hits++; }
+      }
+      if (copy) changed++;
+      return copy || row;
+    });
+    return { rows: out, changed };
+  }
+
+  function valueSets(rows, fields) {
+    const sets = {};
+    fields.forEach(f => { sets[f] = new Set(); });
+    for (const row of rows) for (const f of fields) if (row[f]) sets[f].add(row[f]);
+    return sets;
+  }
+
   /* ── the calculation ────────────────────────────────────────────── */
 
   function compute(master, pvs, fr, prev) {
@@ -326,6 +394,15 @@
     const info = text => notes.push({ level: "info", text });
 
     const months = fr ? [...fr.months.keys()].sort() : [];
+
+    // Normalisations first, so every rule and every check below sees the
+    // standard values.
+    const nz = compileNormalisations(master.normalisations || [], warn);
+    const frN = fr ? applyNormalisations(fr.rows, nz.byFile[FR]) : { rows: [], changed: 0 };
+    const pvsN = pvs ? applyNormalisations(pvs.rows, nz.byFile[PVS]) : { rows: [], changed: 0 };
+    const frRows = frN.rows, pvsRows = pvsN.rows;
+    const frValues = valueSets(frRows, ["itemGroup", "newMis", "parentItem"]);
+    const pvsValues = valueSets(pvsRows, ["itemGroup", "itemParent"]);
 
     // Groups, in output order. A blank name is an unfinished row; a repeat is
     // ignored so a Group is never counted twice in the total.
@@ -358,7 +435,7 @@
       const colLabel = field === "itemGroup" ? "Item Group" : "item_parent";
       if (!pvsRules.has(g.group)) pvsRules.set(g.group, []);
       pvsRules.get(g.group).push({ field, value, label: `${colLabel} = ${clean(r.value)}`, colLabel, raw: clean(r.value) });
-      if (pvs && !pvs.labels[colLabel].has(value)) {
+      if (pvs && !pvsValues[field].has(value)) {
         warn(`${g.group}: ${colLabel} "${clean(r.value)}" does not appear anywhere in the Proj vs SO file.`);
       }
     }
@@ -376,15 +453,15 @@
         const fr1 = compileFillRate(g.raw);
         rule = fr1.text;
         if (fr) {
-          for (const { label, list, shown } of fr1.lists) {
+          for (const { field, label, list, shown } of fr1.lists) {
             list.forEach((v, i) => {
-              if (!fr.labels[label].has(v)) warn(`${g.group}: ${label} "${shown[i]}" does not appear anywhere in the fill rate.`);
+              if (!frValues[field].has(v)) warn(`${g.group}: ${label} "${shown[i]}" does not appear anywhere in the fill rate.`);
             });
           }
         }
         if (!fr1.tests.length) noRule.push(g.group);
         else if (fr) {
-          for (const row of fr.rows) {
+          for (const row of frRows) {
             if (!(row.month in exact)) continue;
             if (fr1.tests.every(t => t(row))) { exact[row.month] += row.qty; matched[row.month]++; }
           }
@@ -395,7 +472,7 @@
         rule = conds.length ? `SO Qty where ${conds.map(c => c.label).join(" OR ")}` : "no Proj vs SO mapping — 0";
         if (!conds.length) warn(`${g.group} is a Proj vs SO Group with no mapping row, so it shows 0.`);
         if (pvs && conds.length) {
-          for (const row of pvs.rows) {
+          for (const row of pvsRows) {
             if (!(row.month in exact)) continue;
             if (conds.some(c => row[c.field] === c.value)) { exact[row.month] += row.qty; matched[row.month]++; }
           }
@@ -415,6 +492,24 @@
       if (pvs.undated) warn(`${pvs.undated} Proj vs SO rows (${fmt(pvs.undatedQty)} SO Qty) have no readable Month/Year and were left out.`);
     }
     if (fr && fr.undated) warn(`${fr.undated} fill-rate rows (${fmt(fr.undatedQty)} kg) have no readable Sales Order Date and were left out.`);
+
+    // What the normalisations did, and which ones found nothing to change —
+    // usually a value spelled differently from the file, or one long retired.
+    if (frN.changed || pvsN.changed) {
+      info(`Normalisations changed ${fmt(frN.changed)} fill-rate line${frN.changed === 1 ? "" : "s"} and ${fmt(pvsN.changed)} Proj vs SO row${pvsN.changed === 1 ? "" : "s"} before the rules were applied.`);
+    }
+    const idle = nz.rules.filter(r => (r.file === FR ? fr : pvs) && !r.hits);
+    if (idle.length) {
+      const shown = idle.slice(0, 6).map(r => `${r.file} · ${r.column} "${r.raw}"`).join("; ");
+      info(`${idle.length} normalisation${idle.length === 1 ? " matches" : "s match"} nothing in the files loaded: ${shown}${idle.length > 6 ? `; and ${idle.length - 6} more` : ""}.`);
+    }
+    // Lines changed per normalisation row, for the master editor; null where
+    // the row is invalid or its file is not loaded.
+    const byIndex = new Map(nz.rules.map(r => [r.index, r]));
+    const normHits = (master.normalisations || []).map((_, i) => {
+      const r = byIndex.get(i);
+      return r && (r.file === FR ? fr : pvs) ? r.hits : null;
+    });
 
     // History from a previous output: its months are kept, a month computed
     // now replaces the old column, and Groups the master no longer has keep
@@ -463,61 +558,137 @@
       totalFrom[m] = "sum";
     }
 
-    return { months: allMonths, newMonths: months, rows, totalKg, totalTons, totalFrom, notes };
+    return { months: allMonths, newMonths: months, rows, totalKg, totalTons, totalFrom, notes, normHits };
   }
 
   const fmt = n => Math.round(n).toLocaleString("en-IN");
 
-  /* ── master as a workbook ───────────────────────────────────────── */
+  /* ── master tables: import, export, merge ───────────────────────── */
 
-  function masterToSheets(master) {
-    return [
-      {
-        name: "Master - Groups",
-        rows: [GROUP_HEADERS, ...master.groups.map(g => [g.group, g.source, g.itemGroup, g.newMis, g.parentItem, g.itemName])],
+  // The three master tables. `fromRow` reads one spreadsheet row (in header
+  // order) and says why when it cannot; `key` is what "Add & update" treats
+  // as the same row.
+  const TABLES = {
+    groups: {
+      title: "Groups", sheet: "Master - Groups", headers: GROUP_HEADERS,
+      toRow: g => [g.group, g.source, g.itemGroup, g.newMis, g.parentItem, g.itemName],
+      fromRow: r => {
+        const group = clean(r[0]);
+        if (!group) return { error: "no Group name" };
+        const source = clean(r[1]) ? normSource(r[1]) : FR;
+        if (!source) return { error: `Source "${clean(r[1])}" is not Fill Rate or Proj vs SO` };
+        return { row: { group, source, itemGroup: clean(r[2]), newMis: clean(r[3]), parentItem: clean(r[4]), itemName: clean(r[5]) } };
       },
-      {
-        name: "Master - Proj vs SO",
-        rows: [MAP_HEADERS, ...master.pvsMap.map(m => [m.column, m.value, m.group])],
+      key: g => norm(g.group),
+    },
+    pvsMap: {
+      title: "Proj vs SO mapping", sheet: "Master - Proj vs SO", headers: MAP_HEADERS,
+      toRow: m => [m.column, m.value, m.group],
+      fromRow: r => {
+        const field = normMapColumn(r[0]);
+        if (!field) return { error: `Match column "${clean(r[0])}" is not Item Group or item_parent` };
+        const value = clean(r[1]), group = clean(r[2]);
+        if (!value || !group) return { error: "needs both a Value and a Group" };
+        return { row: { column: field === "itemGroup" ? "Item Group" : "item_parent", value, group } };
       },
-    ];
+      key: m => `${normMapColumn(m.column)}|${norm(m.value)}|${norm(m.group)}`,
+    },
+    normalisations: {
+      title: "Normalisations", sheet: "Master - Normalisations", headers: NORM_HEADERS,
+      toRow: n => [n.file, n.column, n.raw, n.value],
+      fromRow: r => {
+        const file = normSource(r[0]);
+        if (!file) return { error: `File "${clean(r[0])}" is not Fill Rate or Proj vs SO` };
+        const col = normColumn(file, r[1]);
+        if (!col) return { error: `the ${file} file has no column "${clean(r[1])}"` };
+        const raw = clean(r[2]), value = clean(r[3]);
+        if (!raw || !value) return { error: "needs both a Raw value and a Normalised value" };
+        return { row: { file, column: col.label, raw, value } };
+      },
+      key: n => `${n.file}|${normHeader(n.column)}|${norm(n.raw)}`,
+    },
+  };
+
+  function tableToSheet(kind, rows) {
+    const t = TABLES[kind];
+    return { name: t.sheet, rows: [t.headers, ...(rows || []).map(t.toRow)] };
   }
 
-  // Reads the two master tables back from any workbook that has them —
-  // an exported master or an output file, which carries the same sheets.
-  function readMaster(sheets) {
-    let groups = null, pvsMap = null;
+  // Reads one table from any workbook that has its header row: an exported
+  // table, a whole master, or an output file. With `positional`, rows pasted
+  // without their header are read in the export's column order.
+  function readTable(kind, sheets, opts = {}) {
+    const t = TABLES[kind];
+    let body = null, firstLine = 1;
     for (const s of sheets) {
-      if (!groups) {
-        const h = findHeader(s.rows, GROUP_HEADERS);
-        if (h) {
-          const c = h.col;
-          groups = s.rows.slice(h.row + 1)
-            .filter(r => r && clean(r[c.Group]))
-            .map(r => ({
-              group: clean(r[c.Group]),
-              source: normSource(r[c.Source]) || FR,
-              itemGroup: clean(r[c["Item Group"]]),
-              newMis: clean(r[c["NEW MIS ITEM GROUP"]]),
-              parentItem: clean(r[c["Parent Item"]]),
-              itemName: clean(r[c["Item Name contains"]]),
-            }));
-          continue;
-        }
-      }
-      if (!pvsMap) {
-        const h = findHeader(s.rows, MAP_HEADERS);
-        if (h) {
-          const c = h.col;
-          pvsMap = s.rows.slice(h.row + 1)
-            .filter(r => r && (clean(r[c.Value]) || clean(r[c.Group])))
-            .map(r => ({ column: normMapColumn(r[c["Match column"]]) === "itemGroup" ? "Item Group" : "item_parent", value: clean(r[c.Value]), group: clean(r[c.Group]) }));
-        }
+      const h = findHeader(s.rows, t.headers);
+      if (h) {
+        body = s.rows.slice(h.row + 1).map(r => t.headers.map(name => (r || [])[h.col[name]]));
+        firstLine = h.row + 2;
+        break;
       }
     }
+    if (!body) {
+      if (!opts.positional || !sheets.length) return null;
+      body = sheets[0].rows.map(r => (r || []).slice(0, t.headers.length));
+    }
+    const rows = [], skipped = [];
+    body.forEach((r, i) => {
+      if (!r.some(v => clean(v))) return;
+      const res = t.fromRow(r);
+      if (res.error) skipped.push({ line: firstLine + i, reason: res.error });
+      else rows.push(res.row);
+    });
+    return { rows, skipped };
+  }
+
+  // "add": rows with a new key are appended, rows with a known key replace it
+  // in place. "replace": the table becomes the incoming rows (a repeated key
+  // keeps its last copy).
+  function mergeTable(kind, current, incoming, mode) {
+    const t = TABLES[kind];
+    if (mode === "replace") {
+      const byKey = new Map();
+      incoming.forEach(r => byKey.set(t.key(r), { ...r }));
+      return { rows: [...byKey.values()], added: byKey.size, updated: 0, unchanged: 0, replaced: current.length };
+    }
+    const out = current.map(r => ({ ...r }));
+    const index = new Map(out.map((r, i) => [t.key(r), i]));
+    let added = 0, updated = 0, unchanged = 0;
+    for (const r of incoming) {
+      const k = t.key(r);
+      if (index.has(k)) {
+        const i = index.get(k);
+        if (JSON.stringify(out[i]) === JSON.stringify(r)) unchanged++;
+        else { out[i] = { ...r }; updated++; }
+      } else {
+        index.set(k, out.length);
+        out.push({ ...r });
+        added++;
+      }
+    }
+    return { rows: out, added, updated, unchanged, replaced: 0 };
+  }
+
+  function masterToSheets(master) {
+    return ["groups", "pvsMap", "normalisations"].map(k => tableToSheet(k, master[k]));
+  }
+
+  // Reads a whole master back. Groups and the Proj vs SO mapping must be
+  // there; a master saved before normalisations existed has none, which is
+  // reported as `normalisations: null` so the page can keep its own.
+  function readMaster(sheets) {
+    const groups = readTable("groups", sheets);
+    const pvsMap = readTable("pvsMap", sheets);
+    const normalisations = readTable("normalisations", sheets);
     if (!groups) throw new Error(`No Groups table found — expected a sheet with the headers ${GROUP_HEADERS.join(", ")}.`);
     if (!pvsMap) throw new Error(`No Proj vs SO mapping found — expected a sheet with the headers ${MAP_HEADERS.join(", ")}.`);
-    return { groups, pvsMap };
+    const skipped = [
+      ...groups.skipped.map(s => ({ table: TABLES.groups.title, ...s })),
+      ...pvsMap.skipped.map(s => ({ table: TABLES.pvsMap.title, ...s })),
+      ...(normalisations ? normalisations.skipped.map(s => ({ table: TABLES.normalisations.title, ...s })) : []),
+    ];
+    return { groups: groups.rows, pvsMap: pvsMap.rows, normalisations: normalisations ? normalisations.rows : null, skipped };
   }
 
   // Fills missing fields so a master from storage or an older export is safe to use.
@@ -531,13 +702,18 @@
       pvsMap: (m && Array.isArray(m.pvsMap) ? m.pvsMap : []).map(r => ({
         column: normMapColumn(r.column) === "itemGroup" ? "Item Group" : "item_parent", value: str(r.value), group: str(r.group),
       })),
+      normalisations: (m && Array.isArray(m.normalisations) ? m.normalisations : []).map(n => {
+        const file = normSource(n.file) || FR;
+        const col = normColumn(file, n.column);
+        return { file, column: col ? col.label : str(n.column), raw: str(n.raw), value: str(n.value) };
+      }),
     };
   }
 
   return {
-    PVS, FR, PVS_COLS, FR_COLS, GROUP_HEADERS, MAP_HEADERS,
+    PVS, FR, PVS_COLS, FR_COLS, GROUP_HEADERS, MAP_HEADERS, NORM_HEADERS, NORM_COLUMNS, TABLES,
     norm, clean, parseYM, pvsMonth, monthKey, keyParts, monthLabel, nameTest,
     detect, readWorkbook, readProjVsSo, readFillRate, readPrevious, compute,
-    masterToSheets, readMaster, normaliseMaster,
+    masterToSheets, readMaster, normaliseMaster, readTable, mergeTable, tableToSheet,
   };
 });
