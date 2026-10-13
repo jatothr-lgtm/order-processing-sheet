@@ -1,0 +1,15 @@
+# Real Farmley data — never commit
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+sample-data/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+
+# vercel
+.vercel

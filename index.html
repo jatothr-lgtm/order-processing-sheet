@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orders Placed</title>
+<meta name="description" content="Monthly orders placed per Group in kg, built from the Proj vs SO file and the monthly fill rate report.">
+<script>
+  // styles.css, calc.js and the reader worker load by relative path. Served
+  // under a sub-path and opened without its trailing slash (/orders rather than
+  // /orders/), they would resolve one level up and 404, so add the slash first.
+  // At the site root this is a no-op.
+  if (!/(\/|\.html?)$/.test(location.pathname)) location.replace(location.pathname + "/" + location.search + location.hash);
+</script>
+<link rel="stylesheet" href="styles.css?v=1">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <h1>Orders Placed</h1>
+    <p class="lede">Orders placed per Group, in kg, for the month of the fill rate report. Groups mapped to Proj vs SO take that month's SO Qty; every other Group sums the fill rate's Stock Qty in KGS by its rule in the master.</p>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" data-tab="report" aria-selected="true">Report</button>
+      <button class="tab" role="tab" data-tab="master" aria-selected="false">Master <span class="pill" id="masterPill">Default</span></button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ── Report ─────────────────────────────────────────────── -->
+  <section class="view active" id="view-report">
+    <div class="slots">
+      <div class="slot" data-slot="pvs">
+        <div class="slot-head"><span class="num">1</span><h2>Proj vs SO</h2></div>
+        <p class="hint">Month, Year, Item Group, item_parent, SO Qty</p>
+        <label class="drop">
+          <input type="file" accept=".xlsx,.xlsm,.xls,.csv" hidden>
+          <span class="drop-text">Drop the file or <u>browse</u></span>
+        </label>
+        <div class="slot-status"></div>
+      </div>
+      <div class="slot" data-slot="fr">
+        <div class="slot-head"><span class="num">2</span><h2>Fill rate</h2></div>
+        <p class="hint">Sales Order Date, Stock Qty in KGS, Item Group, NEW MIS ITEM GROUP, Parent Item, Item Name</p>
+        <label class="drop">
+          <input type="file" accept=".xlsx,.xlsm,.xls,.csv" hidden>
+          <span class="drop-text">Drop the file or <u>browse</u></span>
+        </label>
+        <div class="slot-status"></div>
+      </div>
+      <div class="slot optional" data-slot="prev">
+        <div class="slot-head"><span class="num">3</span><h2>Previous output <em>optional</em></h2></div>
+        <p class="hint">Last month's Orders Placed sheet. Its history is kept and the new month is added.</p>
+        <label class="drop">
+          <input type="file" accept=".xlsx,.xlsm,.xls" hidden>
+          <span class="drop-text">Drop the file or <u>browse</u></span>
+        </label>
+        <div class="slot-status"></div>
+      </div>
+    </div>
+    <p class="small">Files are read in your browser and never uploaded. A workbook holding both the Proj vs SO and fill rate tabs fills both slots.</p>
+
+    <div class="card" id="outputCard">
+      <div class="card-head">
+        <h2 id="outTitle">Output</h2>
+        <button class="btn primary" id="btnDownload" disabled>Download Excel</button>
+      </div>
+      <div id="notes"></div>
+      <div id="outEmpty" class="empty">Load the Proj vs SO file and the fill rate to see the output.</div>
+      <div class="tablewrap" id="outWrap" hidden><table class="grid" id="outTable"></table></div>
+    </div>
+  </section>
+
+  <!-- ── Master ─────────────────────────────────────────────── -->
+  <section class="view" id="view-master">
+    <div class="card">
+      <div class="card-head">
+        <h2>Groups</h2>
+        <div class="btns">
+          <button class="btn" id="btnAddGroup">+ Add group</button>
+          <button class="btn" id="btnMasterDownload">Download master</button>
+          <label class="btn">Upload master<input type="file" id="masterFile" accept=".xlsx,.xlsm,.xls" hidden></label>
+          <button class="btn danger" id="btnMasterReset">Reset to default</button>
+        </div>
+      </div>
+      <p class="hint">One row per output row, in this order. <b>Proj vs SO</b> Groups take SO Qty through the mapping below. <b>Fill Rate</b> Groups sum Stock Qty in KGS over the rows that match <b>every</b> filled column; a cell with several values separated by commas matches <b>any</b> of them. In <i>Item Name contains</i>, a number such as <code>16</code> or <code>16 g</code> is a pack size, so 160 g does not count as 16 g; other text is a plain “contains”. A Fill Rate Group with no filters is 0.</p>
+      <div class="tablewrap"><table class="grid master" id="tblGroups"></table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Proj vs SO mapping</h2>
+        <div class="btns"><button class="btn" id="btnAddMap">+ Add mapping</button></div>
+      </div>
+      <p class="hint">A Proj vs SO row counts towards the Group when its Item Group or item_parent equals the Value. A Group with several mapping rows counts each Proj vs SO row once, even if it matches more than one.</p>
+      <div class="tablewrap"><table class="grid master" id="tblMap"></table></div>
+    </div>
+    <p class="small">Edits are kept in this browser only. Use Download master to share them or keep a copy; every output file also carries the master it was built with, and can be uploaded here as a master.</p>
+  </section>
+
+</main>
+
+<datalist id="dl-groups-pvs"></datalist>
+<datalist id="dl-fr-itemGroup"></datalist>
+<datalist id="dl-fr-newMis"></datalist>
+<datalist id="dl-fr-parentItem"></datalist>
+<datalist id="dl-pvs-itemGroup"></datalist>
+<datalist id="dl-pvs-itemParent"></datalist>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="master.js?v=1"></script>
+<script src="calc.js?v=1"></script>
+<script src="app.js?v=1"></script>
+</body>
+</html>
